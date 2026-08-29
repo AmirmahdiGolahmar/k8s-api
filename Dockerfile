@@ -17,6 +17,7 @@ RUN python manage.py collectstatic --noinput
 
 EXPOSE 8000
 
-# Overridden per-service in docker-compose.yml (worker / beat); this is the
-# default for standalone `docker run`.
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Overridden per-service in k8s (worker / beat) and in docker-compose.yml's
+# dev services (which use runserver instead, for autoreload); this is the
+# production default -- gunicorn, not Django's single-threaded dev server.
+CMD ["gunicorn", "k8s_api.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
