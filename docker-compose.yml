@@ -1,0 +1,80 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      # Host-side 6380 to match this project's existing local-dev convention
+      # (settings.py's non-Docker default, curl_tests.sh, etc).
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # One-shot: applies migrations, then exits. web/worker/beat wait for it to
+  # finish successfully so nothing queries the DB before the schema exists.
+  migrate:
+    build: .
+    command: python manage.py migrate
+    volumes:
+      - .:/app
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      # Talks to whatever cluster the host's kubeconfig points at (see
+      # clusters/k8s_client.py) -- read-only, this container never needs to
+      # modify it.
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Runs backups.tasks.run_backup (the actual Pod exec/copy) and
+  # mark_stale_backups/run_due_backup_schedules when Beat enqueues them.
+  worker:
+    build: .
+    command: celery -A k8s_api worker --loglevel=info
+    volumes:
+      - .:/app
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Fires mark-stale-backups / run-due-backup-schedules on the clock
+  # (CELERY_BEAT_SCHEDULE in settings.py) -- never touches Kubernetes itself,
+  # it only enqueues; the worker does the actual work. No kubeconfig needed.
+  beat:
+    build: .
+    command: celery -A k8s_api beat --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully

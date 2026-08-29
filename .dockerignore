@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.git/
+.vscode/
+.claude/
+*.log
+
+# Runtime state -- baking a stale copy into the image would be wrong; the
+# real ones live in the docker-compose bind mount / volumes instead.
+db.sqlite3
+backup_dumps/
+celerybeat-schedule*
+dump.rdb
+
+# collectstatic output -- the Dockerfile regenerates this itself; a local
+# copy here would just be a stale, wasted build-context upload.
+staticfiles/

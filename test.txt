@@ -1,0 +1,192 @@
+========================================
+k8s-api endpoint test commands
+========================================
+
+Start the dev server first:
+  cd /home/amirmahdi/amg/Hamamooz/backend/k8s-api/k8s_api
+  ../.venv/bin/python manage.py runserver 8000
+
+Base URL used below:
+  http://127.0.0.1:8000
+
+----------------------------------------
+CLUSTER CRUD  (/cluster/)
+----------------------------------------
+
+# LIST all clusters
+curl -s http://127.0.0.1:8000/cluster/
+
+# CREATE a cluster (api_server auto-fills from kubeconfig if omitted)
+curl -s -X POST http://127.0.0.1:8000/cluster/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "test-cluster", "description": "created via test.txt", "is_default": true}'
+
+# CREATE a cluster with an explicit kubeconfig (optional; falls back to ~/.kube/config if omitted)
+curl -s -X POST http://127.0.0.1:8000/cluster/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "custom-cluster", "kubeconfig": "<paste raw kubeconfig YAML here>"}'
+
+# RETRIEVE one cluster (replace 1 with a real id from the LIST/CREATE response)
+curl -s http://127.0.0.1:8000/cluster/1/
+
+# UPDATE a cluster (partial update)
+curl -s -X PATCH http://127.0.0.1:8000/cluster/1/ \
+  -H "Content-Type: application/json" \
+  -d '{"description": "updated description"}'
+
+# UPDATE a cluster (full replace - PUT requires all required fields)
+curl -s -X PUT http://127.0.0.1:8000/cluster/1/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "test-cluster", "description": "replaced", "is_default": true}'
+
+# DELETE a cluster
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8000/cluster/1/
+
+----------------------------------------
+NAMESPACE CRUD  (/namespace/)
+Warning: these hit the REAL k3s API server. Creating/deleting is real.
+
+NOTE: list/create/delete are backend-tracked DB records (require an
+explicit numeric cluster_id, no kubeconfig fallback), while
+retrieve/patch-by-name are a *live* k8s read/write that still uses the
+old ?cluster=<id> resolution (falls back to the is_default cluster, then
+to local kubeconfig if none is default). These are two different code
+paths - don't mix up `cluster` and `cluster_id`.
+----------------------------------------
+
+# LIST namespaces for a stored cluster (cluster_id query param is required)
+curl -s "http://127.0.0.1:8000/namespace/?cluster_id=1"
+
+# CREATE a namespace (cluster_id required in body; only "name" is used -
+# labels/annotations are NOT accepted here, see PATCH below for those)
+curl -s -X POST http://127.0.0.1:8000/namespace/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "test-ns"}'
+
+# RETRIEVE one namespace (live k8s read; optional ?cluster=<id>, defaults
+# to the is_default cluster or local kubeconfig)
+curl -s http://127.0.0.1:8000/namespace/test-ns/
+
+# UPDATE a namespace (labels/annotations only - PATCH, live k8s write)
+curl -s -X PATCH http://127.0.0.1:8000/namespace/test-ns/ \
+  -H "Content-Type: application/json" \
+  -d '{"labels": {"env": "patched"}}'
+
+# UPDATE a namespace (labels/annotations only - PUT, aliased to same behavior as PATCH)
+curl -s -X PUT http://127.0.0.1:8000/namespace/test-ns/ \
+  -H "Content-Type: application/json" \
+  -d '{"annotations": {"note": "updated via PUT"}}'
+
+# DELETE a namespace (by DB id, NOT by name - replace 1 with the id from
+# the LIST/CREATE response; async on the cluster, "Terminating" briefly)
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8000/namespace/1/
+
+# Verify deletion status directly against the cluster
+kubectl get ns test-ns
+
+----------------------------------------
+APP CRUD  (/app/)
+App = a backend-tracked Deployment+Service pair. No retrieve/update
+endpoints exist - only list, create, delete. `namespace` is a plain
+string (not a FK), so any existing k8s namespace works.
+Warning: these hit the REAL k3s API server.
+----------------------------------------
+
+# LIST apps for a cluster (cluster_id query param is required)
+curl -s "http://127.0.0.1:8000/app/?cluster_id=1"
+
+# LIST apps for a cluster, filtered to one namespace
+curl -s "http://127.0.0.1:8000/app/?cluster_id=1&namespace=test-ns"
+
+# CREATE an app (image/replicas optional - default to nginx:latest / 1)
+curl -s -X POST http://127.0.0.1:8000/app/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "test-app", "namespace": "test-ns", "image": "nginx:latest", "replicas": 2}'
+
+# DELETE an app (replace 1 with the DB id from the LIST/CREATE response)
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8000/app/1/
+
+# Verify deletion status directly against the cluster
+kubectl -n test-ns get deploy,svc test-app
+
+----------------------------------------
+APP ERROR CASES (worth testing)
+----------------------------------------
+
+# missing cluster_id on list -> 400
+curl -s http://127.0.0.1:8000/app/
+
+# missing cluster_id on create -> 400
+curl -s -X POST http://127.0.0.1:8000/app/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "test-app", "namespace": "test-ns"}'
+
+# non-existent cluster_id on create -> 404
+curl -s -X POST http://127.0.0.1:8000/app/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 999, "name": "test-app", "namespace": "test-ns"}'
+
+# duplicate (cluster, namespace, name) -> error (unique_together)
+curl -s -X POST http://127.0.0.1:8000/app/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "test-app", "namespace": "test-ns"}'
+
+# invalid app name (uppercase not allowed) -> 400
+curl -s -X POST http://127.0.0.1:8000/app/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "Bad_Name", "namespace": "test-ns"}'
+
+# delete non-existent app id -> 404
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8000/app/999/
+
+# delete an app already being deleted (race) -> 409
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8000/app/1/
+
+----------------------------------------
+ERROR CASES (worth testing)
+----------------------------------------
+
+# missing cluster_id on namespace create -> 400 (checked before name validation)
+curl -s -X POST http://127.0.0.1:8000/namespace/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Bad_Name"}'
+
+# invalid namespace name (uppercase not allowed by k8s naming rules) -> 400
+curl -s -X POST http://127.0.0.1:8000/namespace/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "Bad_Name"}'
+
+# duplicate namespace create -> error surfaced from the k3s API itself (409)
+curl -s -X POST http://127.0.0.1:8000/namespace/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "name": "default"}'
+
+# non-existent namespace (live k8s read by name) -> 404 surfaced from the k3s API
+curl -s http://127.0.0.1:8000/namespace/does-not-exist/
+
+# missing cluster_id on a namespace LIST request -> 400 from our own check
+curl -s http://127.0.0.1:8000/namespace/
+
+# non-existent cluster_id on a namespace LIST request -> empty list, not 404
+# (the DB filter just matches nothing - cluster existence isn't checked here)
+curl -s "http://127.0.0.1:8000/namespace/?cluster_id=999"
+
+# non-existent cluster on namespace CREATE -> 404 from our own lookup
+# (this is the path that actually 404s on a bad cluster id)
+curl -s -X POST http://127.0.0.1:8000/namespace/ \
+  -H "Content-Type: application/json" \
+  -d '{"cluster_id": 999, "name": "test-ns"}'
+
+# non-existent cluster on a live retrieve-by-name -> 404 (get_object_or_404
+# inside resolve_cluster; note this endpoint still uses ?cluster=, not cluster_id)
+curl -s "http://127.0.0.1:8000/namespace/test-ns/?cluster=999"
+
+# missing required "name" field on cluster create -> 400
+curl -s -X POST http://127.0.0.1:8000/cluster/ \
+  -H "Content-Type: application/json" \
+  -d '{"description": "no name given"}'
+
+# duplicate cluster name -> 400 (name is unique)
+curl -s -X POST http://127.0.0.1:8000/cluster/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "test-cluster"}'
