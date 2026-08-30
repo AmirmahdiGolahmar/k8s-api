@@ -61,6 +61,9 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API for managing k8s clusters, namespaces, apps, and backups.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    # /docs/ and /schema/ default to public (AllowAny) -- restrict to
+    # logged-in admin/staff users only, not the whole internet.
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.IsAdminUser'],
 }
 
 MIDDLEWARE = [

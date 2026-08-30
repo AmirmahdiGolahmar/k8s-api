@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
@@ -49,6 +50,17 @@ class DeploymentReadinessTests(TestCase):
         response = self.client.get('/healthz/')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'status': 'ok'})
+
+    def test_docs_and_schema_require_admin(self):
+        for path in ['/docs/', '/schema/']:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 403, f'{path} should not be publicly accessible')
+
+        staff_user = get_user_model().objects.create_user('staff', password='pw', is_staff=True)
+        self.client.force_login(staff_user)
+        for path in ['/docs/', '/schema/']:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200, f'{path} should be accessible to a staff user')
 
     @override_settings(DEBUG=False, ALLOWED_HOSTS=['testserver'])
     def test_key_endpoints_survive_debug_false(self):
