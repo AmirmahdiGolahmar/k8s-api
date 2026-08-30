@@ -18,6 +18,15 @@ class Cluster(models.Model):
     # kubeconfig (~/.kube/config or in-cluster config) is used instead.
     kubeconfig = models.TextField(blank=True)
     is_default = models.BooleanField(default=False)
+    # Who added it -- purely informational (unlike Namespace/App's owner,
+    # this never affects access, since only staff can ever create a
+    # Cluster anyway). SET_NULL rather than Namespace/App's CASCADE: a
+    # Cluster is shared infrastructure, deleting the staff account that
+    # added it shouldn't delete the cluster record too.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name='created_clusters', null=True, blank=True,
+    )
     # Default-on so nothing regular users can already see today stops being
     # visible the moment this shipped -- staff always bypasses both fields
     # below regardless. When False, only staff and whoever's in

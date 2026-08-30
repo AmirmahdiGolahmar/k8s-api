@@ -8,6 +8,7 @@ from .views import (
     ClusterViewSet,
     NamespaceDeleteView,
     NamespaceDetailView,
+    NamespaceLiveListView,
     NamespaceListCreateView,
 )
 
@@ -20,6 +21,9 @@ urlpatterns = [
     path('app/<int:pk>/', AppDeleteView.as_view(), name='app-delete'),
     path('app/<int:pk>/refresh/', AppRefreshStatusView.as_view(), name='app-refresh'),
     path('namespace/', NamespaceListCreateView.as_view(), name='namespace-list'),
+    # "live/" must come before <str:name>/ below, or it would be swallowed
+    # as a namespace name lookup instead of matching this route.
+    path('namespace/live/', NamespaceLiveListView.as_view(), name='namespace-live-list'),
     # int:pk (DB id, delete) is listed before str:name (live k8s read/patch)
     # so a numeric path always resolves as an id, not a namespace name — see
     # NamespaceDeleteView's docstring for the resulting known ambiguity with

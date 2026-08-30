@@ -57,6 +57,9 @@ class ClusterViewSet(viewsets.ModelViewSet):
         # and whoever's explicitly listed in allowed_users.
         return queryset.filter(Q(is_accessible=True) | Q(allowed_users=self.request.user)).distinct()
 
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
 
 def resolve_cluster(request):
     """Pick the Cluster a namespace request should target.
@@ -259,6 +262,44 @@ class NamespaceDetailView(APIView):
         return Response(NamespaceSerializer(namespace_to_dict(ns)).data)
 
     put = patch
+
+
+class NamespaceLiveListView(APIView):
+    """Staff-only: every namespace that actually exists in the cluster
+    right now, read straight from Kubernetes -- not just the ones tracked
+    in the DB (NamespaceListCreateView.get only ever shows namespaces
+    created *through this app*). This is the only way to see cluster-system
+    namespaces (kube-system, default, kube-public, kube-node-lease, ...)
+    or anything created outside the app (kubectl, another tool)."""
+
+    @extend_schema(
+        parameters=[OpenApiParameter('cluster_id', int, required=True)],
+        responses={200: NamespaceSerializer(many=True), 403: None},
+    )
+    def get(self, request):
+        if not request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        cluster_id = request.query_params.get('cluster_id')
+        if not cluster_id:
+            return Response(
+                {'detail': 'cluster_id query parameter is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cluster = get_object_or_404(Cluster, pk=cluster_id)
+
+        try:
+            v1 = get_core_v1_client(cluster)
+            live = v1.list_namespace(_request_timeout=K8S_READ_TIMEOUT)
+        except ApiException as exc:
+            return api_exception_response(exc)
+        except Exception:
+            return Response(
+                {'detail': 'Unable to reach the Kubernetes cluster.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(NamespaceSerializer([namespace_to_dict(ns) for ns in live.items], many=True).data)
 
 
 def app_labels(app_name):

@@ -1,9 +1,19 @@
+import types
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from .models import App, Cluster, Namespace
+
+
+def _fake_k8s_namespace(name, uid='uid-1', phase='Active'):
+    """Minimal stand-in for a kubernetes.client.V1Namespace -- just enough
+    attribute shape for namespace_to_dict() to read."""
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name, uid=uid, labels={}, annotations={}, creation_timestamp=None),
+        status=types.SimpleNamespace(phase=phase),
+    )
 
 
 class ClusterPermissionTests(TestCase):
@@ -317,3 +327,86 @@ class AppRefreshStatusTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['status'], 'deleting')
+
+
+class NamespaceLiveListTests(TestCase):
+    """GET /namespace/live/ -- staff-only, reads every namespace that
+    actually exists in the cluster (including kube-system, default, etc,
+    and anything created outside this app), unlike NamespaceListCreateView
+    which only ever shows DB-tracked rows."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user('liveuser', password='pw123456')
+        self.admin = get_user_model().objects.create_user('liveadmin', password='pw123456', is_staff=True)
+        self.cluster = Cluster.objects.create(name='live-list-cluster')
+
+    def test_regular_user_forbidden(self):
+        self.client.force_login(self.user)
+        response = self.client.get(f'/namespace/live/?cluster_id={self.cluster.pk}')
+        self.assertEqual(response.status_code, 403)
+
+    def test_anonymous_forbidden(self):
+        response = self.client.get(f'/namespace/live/?cluster_id={self.cluster.pk}')
+        self.assertEqual(response.status_code, 403)
+
+    @patch('clusters.views.get_core_v1_client')
+    def test_staff_sees_every_real_namespace_including_system_ones(self, mock_client):
+        mock_client.return_value.list_namespace.return_value = types.SimpleNamespace(items=[
+            _fake_k8s_namespace('default'),
+            _fake_k8s_namespace('kube-system'),
+            _fake_k8s_namespace('kube-public'),
+            _fake_k8s_namespace('kube-node-lease'),
+            _fake_k8s_namespace('k8s-api'),
+            _fake_k8s_namespace('untracked-by-app'),
+        ])
+        self.client.force_login(self.admin)
+
+        response = self.client.get(f'/namespace/live/?cluster_id={self.cluster.pk}')
+
+        self.assertEqual(response.status_code, 200)
+        names = {row['name'] for row in response.json()}
+        self.assertEqual(
+            names,
+            {'default', 'kube-system', 'kube-public', 'kube-node-lease', 'k8s-api', 'untracked-by-app'},
+        )
+
+    def test_missing_cluster_id(self):
+        self.client.force_login(self.admin)
+        response = self.client.get('/namespace/live/')
+        self.assertEqual(response.status_code, 400)
+
+
+class OwnerVisibilityTests(TestCase):
+    """Owner/created_by are exposed (as id + resolved username) so the
+    dashboard can show who created each Cluster/Namespace/App."""
+
+    def setUp(self):
+        self.admin = get_user_model().objects.create_user('ownervis-admin', password='pw123456', is_staff=True)
+        self.owner = get_user_model().objects.create_user('ownervis-owner', password='pw123456')
+
+    def test_cluster_created_by_is_set_and_visible(self):
+        self.client.force_login(self.admin)
+        response = self.client.post('/cluster/', {'name': 'owned-cluster'})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['created_by_username'], 'ownervis-admin')
+
+        cluster = Cluster.objects.get(name='owned-cluster')
+        self.assertEqual(cluster.created_by, self.admin)
+
+    def test_namespace_owner_username_visible_to_staff(self):
+        cluster = Cluster.objects.create(name='ns-owner-vis-cluster')
+        Namespace.objects.create(cluster=cluster, name='vis-ns', owner=self.owner)
+
+        self.client.force_login(self.admin)
+        response = self.client.get(f'/namespace/?cluster_id={cluster.pk}')
+        row = next(r for r in response.json() if r['name'] == 'vis-ns')
+        self.assertEqual(row['owner_username'], 'ownervis-owner')
+
+    def test_app_owner_username_visible_to_staff(self):
+        cluster = Cluster.objects.create(name='app-owner-vis-cluster')
+        App.objects.create(cluster=cluster, namespace='ns', name='vis-app', owner=self.owner)
+
+        self.client.force_login(self.admin)
+        response = self.client.get(f'/app/?cluster_id={cluster.pk}')
+        row = next(r for r in response.json() if r['name'] == 'vis-app')
+        self.assertEqual(row['owner_username'], 'ownervis-owner')
