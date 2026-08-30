@@ -3,6 +3,7 @@ import time
 
 from urllib3 import request
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, inline_serializer
 from kubernetes import client as k8s_client
 from kubernetes.client.exceptions import ApiException
@@ -466,6 +467,41 @@ class AppDeleteView(APIView):
 
         app.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AppRefreshStatusView(APIView):
+    """On-demand version of clusters.tasks.sync_app_status for one App --
+    the periodic task only runs every 2 minutes; this lets the dashboard's
+    reload button get an answer immediately instead of waiting up to that
+    long. Reuses the exact same reconciliation logic (deployment_present +
+    optimistic-concurrency update) rather than a separate check.
+    """
+
+    @extend_schema(request=None, responses={200: AppRecordSerializer, 403: None, 404: None})
+    def post(self, request, pk):
+        try:
+            app = App.objects.select_related('cluster').get(pk=pk)
+        except App.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        if app.owner_id != request.user.id and not request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        # DELETING is a claim held by AppDeleteView -- never touched here,
+        # same rule as the periodic sync task.
+        if app.status != App.Status.DELETING:
+            apps_v1 = get_apps_v1_client(app.cluster)
+            present = deployment_present(apps_v1, app.name, app.namespace)
+            if present is not None:
+                new_status = App.Status.ACTIVE if present else App.Status.MISSING
+                if new_status != app.status:
+                    rows = App.objects.filter(pk=app.pk, status=app.status).update(
+                        status=new_status, updated_at=timezone.now(),
+                    )
+                    if rows:
+                        app.status = new_status
+
+        return Response(AppRecordSerializer(app).data)
 
 
 class NamespaceDeleteView(APIView):

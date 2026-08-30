@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AppDeleteView,
     AppListCreateView,
+    AppRefreshStatusView,
     ClusterViewSet,
     NamespaceDeleteView,
     NamespaceDetailView,
@@ -17,6 +18,7 @@ urlpatterns = [
     path('', include(router.urls)),
     path('app/', AppListCreateView.as_view(), name='app-list'),
     path('app/<int:pk>/', AppDeleteView.as_view(), name='app-delete'),
+    path('app/<int:pk>/refresh/', AppRefreshStatusView.as_view(), name='app-refresh'),
     path('namespace/', NamespaceListCreateView.as_view(), name='namespace-list'),
     # int:pk (DB id, delete) is listed before str:name (live k8s read/patch)
     # so a numeric path always resolves as an id, not a namespace name — see

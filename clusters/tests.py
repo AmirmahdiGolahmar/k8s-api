@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
@@ -136,3 +138,74 @@ class LiveNamespaceAccessTests(TestCase):
         self.assertTrue(may_access_live_namespace(self.cluster, 'tracked-ns', self.admin))
         self.assertTrue(may_access_live_namespace(self.cluster, 'anything-untracked', self.admin))
         self.assertFalse(may_access_live_namespace(None, 'tracked-ns', self.other))
+
+
+class AppRefreshStatusTests(TestCase):
+    """POST /app/<pk>/refresh/ -- on-demand version of
+    clusters.tasks.sync_app_status for a single App."""
+
+    def setUp(self):
+        self.owner = get_user_model().objects.create_user('erin', password='pw123456')
+        self.other = get_user_model().objects.create_user('frank', password='pw123456')
+        self.cluster = Cluster.objects.create(name='refresh-cluster')
+        self.app = App.objects.create(
+            cluster=self.cluster, namespace='ns', name='app-x', owner=self.owner, status=App.Status.ACTIVE,
+        )
+
+    def test_non_owner_blocked(self):
+        self.client.force_login(self.other)
+        response = self.client.post(f'/app/{self.app.pk}/refresh/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_missing_app_404(self):
+        self.client.force_login(self.owner)
+        response = self.client.post('/app/999999/refresh/')
+        self.assertEqual(response.status_code, 404)
+
+    @patch('clusters.views.deployment_present')
+    @patch('clusters.views.get_apps_v1_client')
+    def test_flips_active_to_missing_when_deployment_gone(self, mock_client, mock_present):
+        mock_present.return_value = False  # Deployment genuinely absent from k8s
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f'/app/{self.app.pk}/refresh/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'missing')
+        self.app.refresh_from_db()
+        self.assertEqual(self.app.status, App.Status.MISSING)
+
+    @patch('clusters.views.deployment_present')
+    @patch('clusters.views.get_apps_v1_client')
+    def test_stays_active_when_deployment_present(self, mock_client, mock_present):
+        mock_present.return_value = True
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f'/app/{self.app.pk}/refresh/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'active')
+
+    @patch('clusters.views.deployment_present')
+    @patch('clusters.views.get_apps_v1_client')
+    def test_inconclusive_check_leaves_status_untouched(self, mock_client, mock_present):
+        mock_present.return_value = None  # network hiccup, no definitive answer
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f'/app/{self.app.pk}/refresh/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'active')
+
+    def test_deleting_app_is_never_checked(self):
+        self.app.status = App.Status.DELETING
+        self.app.save(update_fields=['status'])
+        self.client.force_login(self.owner)
+
+        # No mocking at all here -- if the view tried to reach a real k8s
+        # client for a DELETING app, this would fail/hang instead of
+        # returning cleanly, since DELETING must never be touched.
+        response = self.client.post(f'/app/{self.app.pk}/refresh/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'deleting')
