@@ -47,6 +47,61 @@ class ClusterPermissionTests(TestCase):
         self.assertNotEqual(self.client.get('/app/').status_code, 403)
 
 
+class ClusterAccessibilityTests(TestCase):
+    """is_accessible=False hides a Cluster from regular users entirely,
+    except whoever is explicitly listed in allowed_users. Staff always see
+    everything regardless."""
+
+    def setUp(self):
+        self.userA = get_user_model().objects.create_user('userA', password='pw123456')
+        self.userB = get_user_model().objects.create_user('userB', password='pw123456')
+        self.admin = get_user_model().objects.create_user('clusteradmin', password='pw123456', is_staff=True)
+        self.restricted = Cluster.objects.create(name='restricted-cluster', is_accessible=False)
+        self.restricted.allowed_users.add(self.userA)
+        self.public = Cluster.objects.create(name='public-cluster')  # is_accessible defaults True
+
+    def _cluster_names(self, user):
+        self.client.force_login(user)
+        return {c['name'] for c in self.client.get('/cluster/').json()}
+
+    def test_default_accessible_cluster_visible_to_everyone(self):
+        self.assertIn('public-cluster', self._cluster_names(self.userA))
+        self.assertIn('public-cluster', self._cluster_names(self.userB))
+
+    def test_restricted_cluster_visible_only_to_allowed_user(self):
+        self.assertIn('restricted-cluster', self._cluster_names(self.userA))
+        self.assertNotIn('restricted-cluster', self._cluster_names(self.userB))
+
+    def test_staff_sees_restricted_cluster_regardless(self):
+        self.assertIn('restricted-cluster', self._cluster_names(self.admin))
+
+    def test_restricted_cluster_404s_on_direct_retrieve_for_disallowed_user(self):
+        self.client.force_login(self.userB)
+        response = self.client.get(f'/cluster/{self.restricted.pk}/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_only_staff_can_change_accessibility(self):
+        self.client.force_login(self.userA)
+        response = self.client.patch(
+            f'/cluster/{self.public.pk}/',
+            data={'is_accessible': False},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_staff_can_toggle_accessibility_and_allowed_users(self):
+        self.client.force_login(self.admin)
+        response = self.client.patch(
+            f'/cluster/{self.public.pk}/',
+            data={'is_accessible': False, 'allowed_users': [self.userB.pk]},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.assertNotIn('public-cluster', self._cluster_names(self.userA))
+        self.assertIn('public-cluster', self._cluster_names(self.userB))
+
+
 class NamespaceAppOwnershipTests(TestCase):
     """User A's Namespaces/Apps are invisible and undeletable to user B;
     staff can see and manage everyone's."""
@@ -138,6 +193,59 @@ class LiveNamespaceAccessTests(TestCase):
         self.assertTrue(may_access_live_namespace(self.cluster, 'tracked-ns', self.admin))
         self.assertTrue(may_access_live_namespace(self.cluster, 'anything-untracked', self.admin))
         self.assertFalse(may_access_live_namespace(None, 'tracked-ns', self.other))
+
+
+class NamespaceAccessManagementTests(TestCase):
+    """PATCH /namespace/<pk>/ (NamespaceDeleteView.patch) -- admin-only
+    control over is_accessible/allowed_users, independent of ownership."""
+
+    def setUp(self):
+        self.owner = get_user_model().objects.create_user('grace', password='pw123456')
+        self.stranger = get_user_model().objects.create_user('heidi', password='pw123456')
+        self.admin = get_user_model().objects.create_user('nsadmin', password='pw123456', is_staff=True)
+        self.cluster = Cluster.objects.create(name='ns-access-cluster')
+        self.namespace = Namespace.objects.create(cluster=self.cluster, name='owned-ns', owner=self.owner)
+
+    def test_non_staff_cannot_patch_even_the_owner(self):
+        self.client.force_login(self.owner)
+        response = self.client.patch(
+            f'/namespace/{self.namespace.pk}/',
+            data={'is_accessible': False},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_locking_accessible_blocks_the_owner(self):
+        self.client.force_login(self.admin)
+        response = self.client.patch(
+            f'/namespace/{self.namespace.pk}/',
+            data={'is_accessible': False},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.client.force_login(self.owner)
+        names = [n['name'] for n in self.client.get(f'/namespace/?cluster_id={self.cluster.pk}').json()]
+        self.assertNotIn('owned-ns', names)
+
+    def test_allowed_users_grants_access_to_a_non_owner(self):
+        self.client.force_login(self.admin)
+        response = self.client.patch(
+            f'/namespace/{self.namespace.pk}/',
+            data={'is_accessible': False, 'allowed_user_ids': [self.stranger.pk]},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Owner is locked out (is_accessible=False overrides ownership)...
+        self.client.force_login(self.owner)
+        names = [n['name'] for n in self.client.get(f'/namespace/?cluster_id={self.cluster.pk}').json()]
+        self.assertNotIn('owned-ns', names)
+
+        # ...but the explicitly allow-listed non-owner can still see it.
+        self.client.force_login(self.stranger)
+        names = [n['name'] for n in self.client.get(f'/namespace/?cluster_id={self.cluster.pk}').json()]
+        self.assertIn('owned-ns', names)
 
 
 class AppRefreshStatusTests(TestCase):

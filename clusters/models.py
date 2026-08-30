@@ -18,6 +18,15 @@ class Cluster(models.Model):
     # kubeconfig (~/.kube/config or in-cluster config) is used instead.
     kubeconfig = models.TextField(blank=True)
     is_default = models.BooleanField(default=False)
+    # Default-on so nothing regular users can already see today stops being
+    # visible the moment this shipped -- staff always bypasses both fields
+    # below regardless. When False, only staff and whoever's in
+    # allowed_users can see/use this cluster at all ("not accessible to
+    # anyone except A, B, C").
+    is_accessible = models.BooleanField(default=True)
+    allowed_users = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name='accessible_clusters',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -64,6 +73,15 @@ class Namespace(models.Model):
     name = models.CharField(max_length=63, validators=[namespace_name_validator])
     uid = models.CharField(max_length=64, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    # Admin-controlled, independent of ownership: default True means owning
+    # this namespace is normally enough. Setting False locks even the owner
+    # out (an admin "suspend" switch) unless they're explicitly re-added to
+    # allowed_users -- which also means allowed_users can grant a
+    # *non-owner* access too, not just restore the owner's.
+    is_accessible = models.BooleanField(default=True)
+    allowed_users = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name='accessible_namespaces',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

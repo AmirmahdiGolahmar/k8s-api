@@ -5,7 +5,7 @@ from django.middleware.csrf import get_token
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 from rest_framework import serializers, status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 _user_fields = {
@@ -99,3 +99,20 @@ def logout_view(request):
 @permission_classes([IsAuthenticated])
 def me(request):
     return Response({'username': request.user.username, 'is_staff': request.user.is_staff})
+
+
+@extend_schema(
+    responses=inline_serializer('UserListItem', fields={
+        'id': serializers.IntegerField(),
+        'username': serializers.CharField(),
+    }, many=True),
+)
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def list_users(request):
+    """Staff-only: every registered user's id + username, so an admin can
+    actually pick specific users (A, B, C) for a Cluster/Namespace's
+    allowed_users exception list -- there's otherwise no way to know a
+    user's id from the dashboard."""
+    User = get_user_model()
+    return Response(list(User.objects.order_by('username').values('id', 'username')))

@@ -7,8 +7,8 @@ class ClusterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cluster
         fields = [
-            'id', 'name', 'description', 'api_server',
-            'kubeconfig', 'is_default', 'created_at', 'updated_at',
+            'id', 'name', 'description', 'api_server', 'kubeconfig', 'is_default',
+            'is_accessible', 'allowed_users', 'created_at', 'updated_at',
         ]
         extra_kwargs = {
             'kubeconfig': {'write_only': True, 'required': False},
@@ -32,12 +32,16 @@ class NamespaceSerializer(serializers.Serializer):
 
 class NamespaceRecordSerializer(serializers.ModelSerializer):
     """Backend-tracked namespace record — the DB row, not a k8s live-read.
-    This is the Source of Truth for list/create (doc section 3.4)."""
+    This is the Source of Truth for list/create (doc section 3.4).
+
+    is_accessible/allowed_users are read-only here on purpose: this
+    serializer is also used for a regular user's own create/list, and
+    those two fields are admin-only to change (see NamespaceAccessView)."""
 
     class Meta:
         model = Namespace
-        fields = ['id', 'name']
-        read_only_fields = ['id']
+        fields = ['id', 'name', 'is_accessible', 'allowed_users']
+        read_only_fields = ['id', 'is_accessible', 'allowed_users']
 
 
 class AppRecordSerializer(serializers.ModelSerializer):

@@ -2,7 +2,9 @@ import json
 import time
 
 from urllib3 import request
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, inline_serializer
 from kubernetes import client as k8s_client
@@ -37,11 +39,23 @@ VERIFY_BACKOFF_SECONDS = 1
 
 
 class ClusterViewSet(viewsets.ModelViewSet):
+    # Present alongside get_queryset() purely for schema/router
+    # introspection (e.g. path parameter typing) -- get_queryset() below is
+    # what actually runs and is filtered per-request, this is never used at
+    # request time since get_queryset() always takes precedence.
     queryset = Cluster.objects.all()
     serializer_class = ClusterSerializer
     # Any authenticated user can list/retrieve (to pick a cluster for
     # namespace/app CRUD); only staff can add/edit/delete one.
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        queryset = Cluster.objects.all()
+        if self.request.user.is_staff:
+            return queryset
+        # is_accessible=False hides a cluster from everyone except staff
+        # and whoever's explicitly listed in allowed_users.
+        return queryset.filter(Q(is_accessible=True) | Q(allowed_users=self.request.user)).distinct()
 
 
 def resolve_cluster(request):
@@ -56,23 +70,46 @@ def resolve_cluster(request):
     return Cluster.objects.filter(is_default=True).first()
 
 
+def user_can_access_namespace(namespace, user):
+    """The single access rule for a tracked Namespace row, used by every
+    view that reads/manages one (list, delete, live detail):
+
+      staff, OR (owner AND is_accessible), OR explicitly in allowed_users.
+
+    is_accessible is an admin override independent of ownership: it can
+    lock the *owner* out of their own namespace without deleting it.
+    allowed_users is a separate exception list -- being in it grants
+    access regardless of ownership or is_accessible, which is also how a
+    non-owner can be granted access to someone else's namespace.
+    """
+    if user.is_staff:
+        return True
+    if namespace.owner_id == user.id and namespace.is_accessible:
+        return True
+    return namespace.allowed_users.filter(pk=user.id).exists()
+
+
 def may_access_live_namespace(cluster, name, user):
     """Gate for NamespaceDetailView (live k8s read/patch by name), which
     otherwise has no DB row to check ownership against -- without this, a
     regular user who knows a namespace's name could read/patch any
-    namespace's live k8s state, bypassing the ownership check that already
+    namespace's live k8s state, bypassing the same-named check that
     protects the list/delete views (which go through the tracked DB row).
 
     Staff can always proceed. Everyone else needs a tracked DB row for this
-    exact (cluster, name) that they own -- an untracked namespace (created
-    outside this backend, or a legacy pre-ownership row with no owner) is
-    nobody's, so it's staff-only, same rule as the list/delete views.
+    exact (cluster, name) that user_can_access_namespace approves -- an
+    untracked namespace (created outside this backend, or a legacy
+    pre-ownership row with no owner) is nobody's, so it's staff-only.
     """
     if user.is_staff:
         return True
     if cluster is None:
         return False
-    return Namespace.objects.filter(cluster=cluster, name=name, owner=user).exists()
+    try:
+        namespace = Namespace.objects.get(cluster=cluster, name=name)
+    except Namespace.DoesNotExist:
+        return False
+    return user_can_access_namespace(namespace, user)
 
 
 def namespace_to_dict(ns):
@@ -124,10 +161,12 @@ class NamespaceListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         namespaces = Namespace.objects.filter(cluster_id=cluster_id)
-        # Regular users only ever see their own namespaces; staff see
-        # everything (matches the same rule for App and for Cluster writes).
+        # See user_can_access_namespace: owns-it-and-accessible, OR
+        # explicitly allow-listed. Staff see everything.
         if not request.user.is_staff:
-            namespaces = namespaces.filter(owner=request.user)
+            namespaces = namespaces.filter(
+                Q(owner=request.user, is_accessible=True) | Q(allowed_users=request.user)
+            ).distinct()
         return Response(NamespaceRecordSerializer(namespaces, many=True).data)
 
     @extend_schema(
@@ -542,7 +581,7 @@ class NamespaceDeleteView(APIView):
             except Namespace.DoesNotExist:
                 return Response(status=status.HTTP_404_NOT_FOUND)
 
-            if namespace.owner_id != request.user.id and not request.user.is_staff:
+            if not user_can_access_namespace(namespace, request.user):
                 return Response(status=status.HTTP_403_FORBIDDEN)
 
             if namespace.status == Namespace.Status.DELETING:
@@ -575,3 +614,33 @@ class NamespaceDeleteView(APIView):
 
         namespace.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
+        operation_id='namespace_update_access',
+        request=inline_serializer('NamespaceAccessRequest', fields={
+            'is_accessible': serializers.BooleanField(required=False),
+            'allowed_user_ids': serializers.ListField(child=serializers.IntegerField(), required=False),
+        }),
+        responses={200: NamespaceRecordSerializer, 403: None, 404: None},
+    )
+    def patch(self, request, pk):
+        """Admin-only: toggle is_accessible and/or replace the
+        allowed_users exception list. Deliberately staff-only with no
+        ownership fallback -- unlike delete, an owner can never change
+        these fields for their own namespace, only an admin can."""
+        if not request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            namespace = Namespace.objects.get(pk=pk)
+        except Namespace.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        if 'is_accessible' in request.data:
+            namespace.is_accessible = bool(request.data['is_accessible'])
+            namespace.save(update_fields=['is_accessible', 'updated_at'])
+        if 'allowed_user_ids' in request.data:
+            users = get_user_model().objects.filter(pk__in=request.data['allowed_user_ids'])
+            namespace.allowed_users.set(users)
+
+        return Response(NamespaceRecordSerializer(namespace).data)

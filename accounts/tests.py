@@ -94,3 +94,27 @@ class RegisterEndpointTests(TestCase):
         response = self.client.post('/auth/register/', {'username': 'someone', 'password': '123'})
         self.assertEqual(response.status_code, 400)
         self.assertFalse(get_user_model().objects.filter(username='someone').exists())
+
+
+class ListUsersEndpointTests(TestCase):
+    """GET /auth/users/ -- staff-only directory used to populate a
+    Cluster/Namespace's allowed_users exception-list picker."""
+
+    def setUp(self):
+        self.regular = get_user_model().objects.create_user('regularjoe', password='pw123456')
+        self.admin = get_user_model().objects.create_user('directoryadmin', password='pw123456', is_staff=True)
+
+    def test_regular_user_forbidden(self):
+        self.client.force_login(self.regular)
+        self.assertEqual(self.client.get('/auth/users/').status_code, 403)
+
+    def test_anonymous_forbidden(self):
+        self.assertEqual(self.client.get('/auth/users/').status_code, 403)
+
+    def test_staff_gets_full_list(self):
+        self.client.force_login(self.admin)
+        response = self.client.get('/auth/users/')
+        self.assertEqual(response.status_code, 200)
+        usernames = {row['username'] for row in response.json()}
+        self.assertIn('regularjoe', usernames)
+        self.assertIn('directoryadmin', usernames)
