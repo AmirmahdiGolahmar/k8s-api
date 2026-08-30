@@ -52,3 +52,45 @@ class AuthEndpointTests(TestCase):
         # DEFAULT_PERMISSION_CLASSES, so it was open to anyone, unauthenticated.
         response = self.client.get('/cluster/')
         self.assertEqual(response.status_code, 403)
+
+
+class RegisterEndpointTests(TestCase):
+    def test_register_creates_account_and_logs_in(self):
+        response = self.client.post('/auth/register/', {'username': 'newperson', 'password': 'a-genuinely-strong-pw-9x2'})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), {'username': 'newperson', 'is_staff': False})
+
+        user = get_user_model().objects.get(username='newperson')
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+
+        # login() was called as part of registration -- session should
+        # already be authenticated with no separate /auth/login/ call.
+        me_response = self.client.get('/auth/me/')
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.json()['username'], 'newperson')
+
+    def test_register_ignores_client_supplied_staff_flag(self):
+        # is_staff/is_superuser must never come from the request body --
+        # self-registration granting cluster-management rights would undo
+        # the whole point of gating Cluster writes to staff.
+        response = self.client.post('/auth/register/', {
+            'username': 'wannabe-admin',
+            'password': 'a-genuinely-strong-pw-9x2',
+            'is_staff': True,
+            'is_superuser': True,
+        })
+        self.assertEqual(response.status_code, 201)
+        user = get_user_model().objects.get(username='wannabe-admin')
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+
+    def test_register_rejects_duplicate_username(self):
+        get_user_model().objects.create_user('taken', password='whatever-pw-123')
+        response = self.client.post('/auth/register/', {'username': 'taken', 'password': 'a-genuinely-strong-pw-9x2'})
+        self.assertEqual(response.status_code, 400)
+
+    def test_register_rejects_weak_password(self):
+        response = self.client.post('/auth/register/', {'username': 'someone', 'password': '123'})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(get_user_model().objects.filter(username='someone').exists())

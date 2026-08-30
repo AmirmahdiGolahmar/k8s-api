@@ -1,4 +1,6 @@
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.contrib.auth.password_validation import validate_password
 from django.middleware.csrf import get_token
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 from rest_framework import serializers, status
@@ -44,6 +46,44 @@ def login_view(request):
         return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
     login(request, user)
     return Response({'username': user.username, 'is_staff': user.is_staff})
+
+
+@extend_schema(
+    request=inline_serializer('RegisterRequest', fields={
+        'username': serializers.CharField(),
+        'password': serializers.CharField(),
+    }),
+    responses={
+        201: inline_serializer('RegisterResponse', fields=_user_fields),
+        400: OpenApiResponse(description='Username taken, or password does not meet requirements.'),
+    },
+)
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register_view(request):
+    User = get_user_model()
+    username = (request.data.get('username') or '').strip()
+    password = request.data.get('password') or ''
+
+    if not username:
+        return Response({'detail': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if User.objects.filter(username=username).exists():
+        return Response({'detail': 'That username is already taken.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        # Passing an unsaved User(username=...) lets UserAttributeSimilarityValidator
+        # (one of AUTH_PASSWORD_VALIDATORS) actually compare the password
+        # against the username, same as it would for a real user.
+        validate_password(password, user=User(username=username))
+    except DjangoValidationError as exc:
+        return Response({'detail': ' '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # is_staff/is_superuser are never taken from the request body -- self
+    # registration must never be able to grant cluster-management rights
+    # (Cluster writes, /docs/, /schema/ are all staff-gated elsewhere).
+    user = User.objects.create_user(username=username, password=password, is_staff=False, is_superuser=False)
+    login(request, user)
+    return Response({'username': user.username, 'is_staff': user.is_staff}, status=status.HTTP_201_CREATED)
 
 
 @extend_schema(request=None, responses={204: None})
