@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'drf_spectacular',
+    'accounts',
     'clusters',
     'backups',
     'django_extensions',
@@ -54,6 +55,12 @@ INSTALLED_APPS = [
 
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # No view here ever set its own permission_classes, so every endpoint
+    # (cluster/app/namespace/backup CRUD -- including submitting kubeconfigs
+    # and deleting real k8s resources) was open to anyone, unauthenticated.
+    # accounts.views explicitly opts individual views back out (login, csrf)
+    # since those must stay reachable while logged out.
+    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
 }
 
 SPECTACULAR_SETTINGS = {

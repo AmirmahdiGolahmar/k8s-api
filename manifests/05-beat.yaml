@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat
+  namespace: k8s-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: beat }
+  template:
+    metadata:
+      labels: { app: beat }
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: beat
+          image: ghcr.io/amirmahdigolahmar/k8s-api:latest
+          command: ["celery", "-A", "k8s_api", "beat", "--loglevel=info"]
+          envFrom:
+            - secretRef: { name: k8s-api-secrets }

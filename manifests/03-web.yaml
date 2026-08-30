@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: k8s-api
+spec:
+  replicas: 1
+  # Two Pods can't both hold the k8s-api-data PVC (ReadWriteOnce) --
+  # Recreate fully stops the old Pod before starting the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      initContainers:
+        - name: migrate
+          image: ghcr.io/amirmahdigolahmar/k8s-api:latest
+          command: ["python", "manage.py", "migrate"]
+          envFrom:
+            - secretRef: { name: k8s-api-secrets }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: web
+          image: ghcr.io/amirmahdigolahmar/k8s-api:latest
+          envFrom:
+            - secretRef: { name: k8s-api-secrets }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          ports:
+            - containerPort: 8000
+          # Host header override: kubelet probes the Pod's internal IP
+          # directly, but ALLOWED_HOSTS only permits golahmar.osdl.ir --
+          # without this, Django 400s the probe itself and the Pod never
+          # becomes Ready.
+          readinessProbe:
+            httpGet:
+              path: /healthz/
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: golahmar.osdl.ir
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz/
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: golahmar.osdl.ir
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: k8s-api-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: k8s-api
+spec:
+  selector: { app: web }
+  ports:
+    - port: 80
+      targetPort: 8000

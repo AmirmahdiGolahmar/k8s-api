@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: k8s-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker }
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: worker
+          image: ghcr.io/amirmahdigolahmar/k8s-api:latest
+          command: ["celery", "-A", "k8s_api", "worker", "--loglevel=info"]
+          envFrom:
+            - secretRef: { name: k8s-api-secrets }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: k8s-api-data

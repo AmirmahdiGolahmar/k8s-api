@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-api
+  namespace: k8s-api
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: golahmar.osdl.ir
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

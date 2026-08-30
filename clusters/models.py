@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
 
@@ -52,6 +53,14 @@ class Namespace(models.Model):
         DELETING = 'deleting', 'Deleting'
 
     cluster = models.ForeignKey(Cluster, on_delete=models.CASCADE, related_name='namespaces')
+    # Nullable so pre-existing rows (created before ownership existed)
+    # don't break the migration; null == nobody's, only staff can see/manage
+    # those. Every row created through NamespaceListCreateView.post sets
+    # this to request.user.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='owned_namespaces', null=True, blank=True,
+    )
     name = models.CharField(max_length=63, validators=[namespace_name_validator])
     uid = models.CharField(max_length=64, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
@@ -83,6 +92,11 @@ class App(models.Model):
         MISSING = 'missing', 'Missing'
 
     cluster = models.ForeignKey(Cluster, on_delete=models.CASCADE, related_name='apps')
+    # Same nullable-for-legacy-rows reasoning as Namespace.owner above.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='owned_apps', null=True, blank=True,
+    )
     name = models.CharField(max_length=63, validators=[namespace_name_validator])
     # Plain string, not a FK to Namespace: an App should be deployable into
     # any existing k8s namespace, not just ones this backend happens to track.

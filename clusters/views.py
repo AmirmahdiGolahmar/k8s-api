@@ -6,13 +6,14 @@ from django.db import IntegrityError, transaction
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, inline_serializer
 from kubernetes import client as k8s_client
 from kubernetes.client.exceptions import ApiException
-from rest_framework import serializers, status, viewsets
+from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .k8s_client import get_apps_v1_client, get_core_v1_client
 from .models import App, Cluster, Namespace
+from .permissions import IsAdminOrReadOnly
 from .serializers import AppRecordSerializer, ClusterSerializer, NamespaceRecordSerializer, NamespaceSerializer
 
 # Bounds how long we wait for a k8s API *response*, so a stalled link
@@ -37,6 +38,9 @@ VERIFY_BACKOFF_SECONDS = 1
 class ClusterViewSet(viewsets.ModelViewSet):
     queryset = Cluster.objects.all()
     serializer_class = ClusterSerializer
+    # Any authenticated user can list/retrieve (to pick a cluster for
+    # namespace/app CRUD); only staff can add/edit/delete one.
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 def resolve_cluster(request):
@@ -49,6 +53,25 @@ def resolve_cluster(request):
     if cluster_id:
         return get_object_or_404(Cluster, pk=cluster_id)
     return Cluster.objects.filter(is_default=True).first()
+
+
+def may_access_live_namespace(cluster, name, user):
+    """Gate for NamespaceDetailView (live k8s read/patch by name), which
+    otherwise has no DB row to check ownership against -- without this, a
+    regular user who knows a namespace's name could read/patch any
+    namespace's live k8s state, bypassing the ownership check that already
+    protects the list/delete views (which go through the tracked DB row).
+
+    Staff can always proceed. Everyone else needs a tracked DB row for this
+    exact (cluster, name) that they own -- an untracked namespace (created
+    outside this backend, or a legacy pre-ownership row with no owner) is
+    nobody's, so it's staff-only, same rule as the list/delete views.
+    """
+    if user.is_staff:
+        return True
+    if cluster is None:
+        return False
+    return Namespace.objects.filter(cluster=cluster, name=name, owner=user).exists()
 
 
 def namespace_to_dict(ns):
@@ -100,6 +123,10 @@ class NamespaceListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         namespaces = Namespace.objects.filter(cluster_id=cluster_id)
+        # Regular users only ever see their own namespaces; staff see
+        # everything (matches the same rule for App and for Cluster writes).
+        if not request.user.is_staff:
+            namespaces = namespaces.filter(owner=request.user)
         return Response(NamespaceRecordSerializer(namespaces, many=True).data)
 
     @extend_schema(
@@ -140,7 +167,9 @@ class NamespaceListCreateView(APIView):
 
         # Only persist once k8s creation actually succeeded, so a rejected
         # or failed create never leaves an orphan row in the DB.
-        namespace = Namespace.objects.create(cluster=cluster, name=name, uid=created.metadata.uid)
+        namespace = Namespace.objects.create(
+            cluster=cluster, name=name, uid=created.metadata.uid, owner=request.user,
+        )
         return Response(NamespaceRecordSerializer(namespace).data, status=status.HTTP_201_CREATED)
 
 
@@ -151,10 +180,13 @@ class NamespaceDetailView(APIView):
 
     @extend_schema(
         parameters=[OpenApiParameter('cluster', int, description='Cluster id; defaults to the cluster flagged is_default.')],
-        responses=NamespaceSerializer,
+        responses={200: NamespaceSerializer, 403: None},
     )
     def get(self, request, name):
-        v1 = get_core_v1_client(resolve_cluster(request))
+        cluster = resolve_cluster(request)
+        if not may_access_live_namespace(cluster, name, request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        v1 = get_core_v1_client(cluster)
         try:
             ns = v1.read_namespace(name)
         except ApiException as exc:
@@ -164,13 +196,17 @@ class NamespaceDetailView(APIView):
     @extend_schema(
         parameters=[OpenApiParameter('cluster', int, description='Cluster id; defaults to the cluster flagged is_default.')],
         request=NamespaceSerializer,
-        responses=NamespaceSerializer,
+        responses={200: NamespaceSerializer, 403: None},
     )
     def patch(self, request, name):
+        cluster = resolve_cluster(request)
+        if not may_access_live_namespace(cluster, name, request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
         serializer = NamespaceSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
-        v1 = get_core_v1_client(resolve_cluster(request))
+        v1 = get_core_v1_client(cluster)
         body = {'metadata': {}}
         if 'labels' in serializer.validated_data:
             body['metadata']['labels'] = serializer.validated_data['labels']
@@ -284,6 +320,9 @@ class AppListCreateView(APIView):
         namespace = request.query_params.get('namespace')
         if namespace:
             apps = apps.filter(namespace=namespace)
+        # Same per-owner visibility rule as NamespaceListCreateView.get.
+        if not request.user.is_staff:
+            apps = apps.filter(owner=request.user)
         return Response(AppRecordSerializer(apps, many=True).data)
 
     @extend_schema(
@@ -310,7 +349,7 @@ class AppListCreateView(APIView):
         # Build via the model so unspecified image/replicas pick up their
         # field defaults -- DRF only marks fields with a model default as
         # required=False, it doesn't inject the default into validated_data.
-        app = App(cluster=cluster, **serializer.validated_data)
+        app = App(cluster=cluster, owner=request.user, **serializer.validated_data)
         name, namespace = app.name, app.namespace
 
         print(f"name = {name}")
@@ -388,6 +427,9 @@ class AppDeleteView(APIView):
             except App.DoesNotExist:
                 return Response(status=status.HTTP_404_NOT_FOUND)
 
+            if app.owner_id != request.user.id and not request.user.is_staff:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+
             if app.status == App.Status.DELETING:
                 return Response(
                     {'detail': 'App deletion is already in progress.'},
@@ -463,6 +505,9 @@ class NamespaceDeleteView(APIView):
                 namespace = Namespace.objects.select_for_update().get(pk=pk)
             except Namespace.DoesNotExist:
                 return Response(status=status.HTTP_404_NOT_FOUND)
+
+            if namespace.owner_id != request.user.id and not request.user.is_staff:
+                return Response(status=status.HTTP_403_FORBIDDEN)
 
             if namespace.status == Namespace.Status.DELETING:
                 return Response(

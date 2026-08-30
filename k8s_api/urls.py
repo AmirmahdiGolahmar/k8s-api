@@ -30,6 +30,7 @@ def healthz(request):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('auth/', include('accounts.urls')),
     path('', include('clusters.urls')),
     path('backup/', include('backups.urls')),
     path('schema/', SpectacularAPIView.as_view(), name='schema'),
