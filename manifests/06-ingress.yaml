@@ -1,8 +1,91 @@
+# Split into two Ingress objects deliberately: Traefik's default router
+# priority (when not set explicitly) is based on the raw string length of
+# its internal rule expression, not path specificity -- "PathPrefix(...)"
+# is a longer keyword than "Path(...)", which meant a short exact path like
+# /docs could lose to the "/" catch-all purely by coincidence of keyword
+# length (observed live: /docs and /schema are structurally identical
+# rules, yet only one of them routed correctly). The
+# traefik.ingress.kubernetes.io/router.priority annotation fixes this
+# deterministically, but it applies per-Ingress-object, not per-path-rule
+# within one object -- hence two objects here, not one.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: k8s-api
+  name: k8s-api-backend
   namespace: k8s-api
+  annotations:
+    traefik.ingress.kubernetes.io/router.priority: "100"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: golahmar.osdl.ir
+      http:
+        paths:
+          - path: /cluster
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /cluster/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /app
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /app/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /namespace
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /namespace/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /backup
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /backup/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /auth
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /auth/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /admin
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /admin/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /docs
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /docs/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /schema
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /schema/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /healthz
+            pathType: Exact
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /healthz/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /static/
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-api-frontend
+  namespace: k8s-api
+  annotations:
+    traefik.ingress.kubernetes.io/router.priority: "1"
 spec:
   ingressClassName: traefik
   rules:
@@ -11,8 +94,4 @@ spec:
         paths:
           - path: /
             pathType: Prefix
-            backend:
-              service:
-                name: web
-                port:
-                  number: 80
+            backend: { service: { name: frontend, port: { number: 80 } } }
