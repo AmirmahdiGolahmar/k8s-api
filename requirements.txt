@@ -15,6 +15,12 @@ click-repl==0.3.0
 croniter==6.2.4
 Django==6.1
 django-extensions==4.1
+# django-prometheus is intentionally NOT listed here -- its PyPI metadata
+# declares Django<6.1 (stale; verified working fine against 6.1), which
+# would make a plain `pip install -r requirements.txt` either fail outright
+# (Django is pinned above too, so pip can't silently downgrade it) or
+# downgrade Django if it weren't pinned. See requirements-prometheus.txt
+# and the Dockerfile for the --no-deps install that works around this.
 djangorestframework==3.18.0
 drf-spectacular==0.30.0
 durationpy==0.10
@@ -27,6 +33,10 @@ kubernetes==36.0.3
 multidict==6.7.1
 oauthlib==3.3.1
 packaging==26.3
+# django-prometheus's only real runtime dependency -- installed normally
+# here (no Django constraint of its own) even though django-prometheus
+# itself is installed separately, --no-deps, from requirements-prometheus.txt.
+prometheus-client==0.26.0
 prompt_toolkit==3.0.53
 propcache==0.5.2
 python-dateutil==2.9.0.post0

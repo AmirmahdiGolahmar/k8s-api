@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Fixed rather than Grafana's auto-generated default, so dashboard JSON
+    # (which references a datasource by uid) stays stable across re-provisions.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

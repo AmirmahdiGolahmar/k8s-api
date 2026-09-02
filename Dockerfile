@@ -5,8 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-prometheus.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    # --no-deps: django-prometheus's metadata declares Django<6.1 (stale --
+    # see requirements-prometheus.txt) which would conflict with the
+    # Django==6.1 pin above if resolved together; prometheus-client (its
+    # real dependency) is already installed normally from requirements.txt.
+    && pip install --no-cache-dir --no-deps -r requirements-prometheus.txt
 
 COPY . .
 

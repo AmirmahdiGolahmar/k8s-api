@@ -1,0 +1,43 @@
+# A standalone Deployment rather than a sidecar on 02-redis.yaml's Pod --
+# same monitoring outcome, but zero risk to (and no restart of) the live
+# Redis instance Celery's broker/result-backend depends on.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: k8s-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis-exporter }
+  template:
+    metadata:
+      labels: { app: redis-exporter }
+    spec:
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.90.0
+          env:
+            # Talks to the same Service Celery uses (k8s-api-redis, see
+            # 02-redis.yaml) -- no auth on this Redis instance, so no
+            # REDIS_PASSWORD needed.
+            - name: REDIS_ADDR
+              value: redis://k8s-api-redis:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests: { cpu: 10m, memory: 20Mi }
+            limits: { cpu: 100m, memory: 50Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: k8s-api
+spec:
+  selector: { app: redis-exporter }
+  ports:
+    - name: metrics
+      port: 9121
+      targetPort: metrics

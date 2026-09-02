@@ -1,0 +1,9 @@
+# Installed separately from requirements.txt, with --no-deps (see
+# Dockerfile), because django-prometheus 2.5.0's PyPI metadata declares
+# Django<6.1 -- stale (this project is on Django 6.1) but real: pip's
+# resolver refuses the install if this file is merged into the main
+# requirements.txt install alongside the Django==6.1 pin. Verified working
+# correctly against Django 6.1 (system check, real migrations, live
+# request/DB metrics at /metrics) before choosing this workaround over
+# downgrading Django or dropping the package.
+django-prometheus==2.5.0

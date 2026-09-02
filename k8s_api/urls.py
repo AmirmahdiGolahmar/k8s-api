@@ -36,4 +36,11 @@ urlpatterns = [
     path('schema/', SpectacularAPIView.as_view(), name='schema'),
     path('docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('healthz/', healthz, name='healthz'),
+    # django_prometheus.urls defines its own route as "metrics" (no leading
+    # path of its own) -- including it under a 'metrics/' prefix here would
+    # produce /metrics/metrics, not /metrics. Include it at the root instead.
+    # No auth of its own -- deliberately left out of manifests/06-ingress.yaml
+    # so it's unreachable from the public internet; only Prometheus, scraping
+    # the ClusterIP Service from inside the cluster, ever hits this.
+    path('', include('django_prometheus.urls')),
 ]

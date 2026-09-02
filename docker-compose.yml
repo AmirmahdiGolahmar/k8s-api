@@ -39,6 +39,11 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # DEBUG=True (the settings.py default) only implicitly allows
+      # localhost/127.0.0.1/[::1] when ALLOWED_HOSTS is empty -- "web" (the
+      # Host header Prometheus sends when scraping via the Compose service
+      # name) isn't in that list, so without this Django 400s the scrape.
+      DJANGO_ALLOWED_HOSTS: web,localhost,127.0.0.1
     depends_on:
       redis:
         condition: service_healthy
@@ -56,6 +61,11 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # File-backed store for backup_duration_seconds (backups/metrics.py) --
+      # see k8s_api/celery.py's worker_init handler for why this is needed
+      # (Celery's prefork pool runs tasks in several child processes) and
+      # what serves it on :9808.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
     depends_on:
       redis:
         condition: service_healthy
@@ -78,3 +88,53 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+
+  # Same monitoring pattern as manifests/07-redis-exporter.yaml, pointed at
+  # this Compose stack's own redis service instead of the k8s one.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.90.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    # No host port published -- only Prometheus (inside the Compose
+    # network) ever needs to reach this.
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    volumes:
+      - ./monitoring/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - web
+      - worker
+      - redis-exporter
+
+  grafana:
+    image: grafana/grafana:13.2.0
+    environment:
+      # Local-dev only -- this compose file is never used in production
+      # (see manifests/ + monitoring/values.yaml for that). Override via a
+      # real GRAFANA_ADMIN_PASSWORD env var if you want something other
+      # than the "admin" default.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Deliberately NOT nested under the provisioning mount above: Docker
+      # has to create /etc/grafana/provisioning/dashboards/json as a fresh
+      # mountpoint at container start, which fails once the parent mount is
+      # :ro. A separate top-level path avoids that entirely.
+      - ./monitoring/docker/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

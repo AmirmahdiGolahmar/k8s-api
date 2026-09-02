@@ -38,6 +38,7 @@ CSRF_TRUSTED_ORIGINS = [o for o in os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS',
 # Application definition
 
 INSTALLED_APPS = [
+    'django_prometheus',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -74,6 +75,10 @@ SPECTACULAR_SETTINGS = {
 }
 
 MIDDLEWARE = [
+    # Must stay first: it starts the per-request timer django_prometheus
+    # uses to compute request latency, so anything ahead of it in the chain
+    # (and its processing time) wouldn't be measured.
+    'django_prometheus.middleware.PrometheusBeforeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -82,6 +87,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Must stay last: it records the response (status code, latency) after
+    # every other middleware -- including exception handling -- has run.
+    'django_prometheus.middleware.PrometheusAfterMiddleware',
 ]
 
 ROOT_URLCONF = 'k8s_api.urls'
@@ -114,7 +122,10 @@ DATA_DIR = Path(os.environ.get('DATA_DIR', BASE_DIR))
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
+        # django_prometheus's sqlite3 backend is a drop-in wrapper around
+        # Django's own -- same behavior, plus per-query count/latency metrics
+        # exported at /metrics/.
+        'ENGINE': 'django_prometheus.db.backends.sqlite3',
         'NAME': DATA_DIR / 'db.sqlite3',
     }
 }

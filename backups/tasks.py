@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from pathlib import Path
 
 from celery import shared_task
@@ -10,6 +11,7 @@ from kubernetes.stream import stream
 
 from clusters.k8s_client import get_core_v1_client
 
+from .metrics import BACKUP_DURATION_SECONDS
 from .models import Backup, BackupSchedule
 
 logger = logging.getLogger(__name__)
@@ -102,12 +104,17 @@ def run_backup(self, backup_id):
     backup.started_at = timezone.now()
     backup.save(update_fields=['status', 'started_at'])
 
+    # Excludes time spent on transient-error retries (each retry is a fresh
+    # task invocation with its own timer) -- this measures one successful
+    # (or finally-failed) attempt, not the whole retry sequence.
+    attempt_start = time.monotonic()
     try:
         pod_name, container = _select_pod(backup.app)
         dest = _dest_path(backup)
         _copy_from_pod(backup.app.cluster, backup.app.namespace, pod_name, container, backup.source_path, dest)
     except PermanentBackupError as exc:
         # Retrying a bad path or a missing Pod selector wouldn't help.
+        BACKUP_DURATION_SECONDS.labels(app=backup.app.name, status='failed').observe(time.monotonic() - attempt_start)
         _mark_failed(backup, str(exc))
         return
     except Exception as exc:
@@ -117,9 +124,11 @@ def run_backup(self, backup_id):
         if self.request.retries < self.max_retries:
             logger.warning('Backup %s hit a transient error, retrying: %s', backup.public_id, exc)
             raise self.retry(exc=exc)
+        BACKUP_DURATION_SECONDS.labels(app=backup.app.name, status='failed').observe(time.monotonic() - attempt_start)
         _mark_failed(backup, f'Giving up after {self.max_retries} retries: {exc}')
         return
 
+    BACKUP_DURATION_SECONDS.labels(app=backup.app.name, status='completed').observe(time.monotonic() - attempt_start)
     backup.pod_name = pod_name
     backup.status = Backup.Status.COMPLETED
     backup.file_path = str(dest)
