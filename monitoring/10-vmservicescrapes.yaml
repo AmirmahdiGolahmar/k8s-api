@@ -32,6 +32,15 @@ spec:
       vm_scrape_params:
         headers:
           - "Host: golahmar.osdl.ir"
+      # Without this, vmagent's default job label is the Service name
+      # ("web") -- but monitoring/docker/grafana/dashboards/k8s-api-overview.json
+      # (shared with local dev's docker-compose, where prometheus.yml's
+      # static job_name IS "k8s-api") filters on job="k8s-api". Relabeled
+      # here so the same dashboard file works unchanged in both
+      # environments instead of hardcoding two different job names.
+      relabelConfigs:
+        - target_label: job
+          replacement: k8s-api
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape
@@ -45,6 +54,13 @@ spec:
     # prometheus_client's start_http_server (k8s_api/celery.py) -- plain
     # stdlib HTTP, no Host-header/ALLOWED_HOSTS check like Django has.
     - port: metrics
+      # Same reasoning as k8s-api-web's relabelConfigs above -- default
+      # job label would be "worker-metrics" (the Service name), but the
+      # shared dashboard filters on job="k8s-api-worker" (local dev's
+      # prometheus.yml job_name).
+      relabelConfigs:
+        - target_label: job
+          replacement: k8s-api-worker
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape

@@ -75,9 +75,16 @@ vmsingle:
 vmagent:
   spec:
     selectAllByDefault: true
+    # 96Mi (an earlier draft here) was undersized in practice -- vmagent
+    # OOMKilled repeatedly (exitCode 137, confirmed via `kubectl get pod
+    # ... -o jsonpath='{.status.containerStatuses[0].lastState}'`).
+    # 21 scrape targets includes kubelet's /metrics/cadvisor endpoint,
+    # which is per-container metrics for the whole cluster -- much higher
+    # cardinality than the app + node-exporter + kube-state-metrics
+    # targets this was originally sized against.
     resources:
-      requests: { cpu: 30m, memory: 48Mi }
-      limits: { cpu: 150m, memory: 96Mi }
+      requests: { cpu: 30m, memory: 96Mi }
+      limits: { cpu: 150m, memory: 300Mi }
     extraArgs:
       # If VMSingle is ever briefly unreachable (restart, resource
       # pressure of its own), vmagent buffers unsent samples to local
