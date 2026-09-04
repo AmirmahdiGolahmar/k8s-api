@@ -11,7 +11,7 @@
       "id": 1,
       "title": "Redis reachable",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [
         { "expr": "redis_up", "refId": "A" }
@@ -30,7 +30,7 @@
       "id": 2,
       "title": "Redis connected clients",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 10, "x": 4, "y": 0 },
       "targets": [
         { "expr": "redis_connected_clients", "legendFormat": "connected clients", "refId": "A" }
@@ -40,7 +40,7 @@
       "id": 3,
       "title": "Redis memory used",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 10, "x": 14, "y": 0 },
       "targets": [
         { "expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A" }
@@ -51,7 +51,7 @@
       "id": 4,
       "title": "HTTP responses by status (rate/5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
@@ -65,7 +65,7 @@
       "id": 5,
       "title": "HTTP p95 latency by view",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
@@ -80,7 +80,7 @@
       "id": 6,
       "title": "DB queries (rate/5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
         {
@@ -94,7 +94,7 @@
       "id": 7,
       "title": "HTTP requests by method (rate/5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "targets": [
         {
@@ -108,7 +108,7 @@
       "id": 8,
       "title": "Backup duration p50/p95 by app",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "targets": [
         {
@@ -128,7 +128,7 @@
       "id": 9,
       "title": "Backups completed vs failed (rate/15m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "targets": [
         {

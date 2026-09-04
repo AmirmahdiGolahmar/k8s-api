@@ -4,7 +4,10 @@ datasources:
   - name: Prometheus
     # Fixed rather than Grafana's auto-generated default, so dashboard JSON
     # (which references a datasource by uid) stays stable across re-provisions.
-    uid: prometheus
+    # Matches "VictoriaMetrics" -- the uid the victoria-metrics-k8s-stack
+    # Helm chart auto-provisions in production (monitoring/victoria-values.yaml)
+    # -- so the same dashboard JSON works unchanged in both environments.
+    uid: VictoriaMetrics
     type: prometheus
     access: proxy
     url: http://prometheus:9090
