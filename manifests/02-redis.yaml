@@ -14,8 +14,24 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          # Redis has no memory ceiling by default -- it'll grow until the
+          # container's memory limit kills it. --maxmemory caps it below
+          # that limit so Redis itself starts rejecting writes (visible,
+          # recoverable) instead of the kernel OOM-killing the process
+          # (silent, loses in-flight task state). noeviction is right for
+          # a Celery broker/result-backend -- silently dropping keys under
+          # an LRU policy would just relocate the failure somewhere worse.
+          args:
+            - redis-server
+            - --maxmemory
+            - "96mb"
+            - --maxmemory-policy
+            - noeviction
           ports:
             - containerPort: 6379
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 128Mi }
 ---
 apiVersion: v1
 kind: Service

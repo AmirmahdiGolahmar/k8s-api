@@ -18,13 +18,51 @@ spec:
       containers:
         - name: worker
           image: ghcr.io/amirmahdigolahmar/k8s-api:latest
-          command: ["celery", "-A", "k8s_api", "worker", "--loglevel=info"]
+          # Celery's default concurrency is os.cpu_count() -- on this node
+          # that's 4, meaning 4 prefork children with no CPU limit to bound
+          # them. Pinned explicitly so the process count matches the CPU
+          # budget below deterministically, instead of depending on
+          # however Celery reads the container's cgroup at startup.
+          command: ["celery", "-A", "k8s_api", "worker", "--loglevel=info", "--concurrency=2"]
           envFrom:
             - secretRef: { name: k8s-api-secrets }
+          env:
+            # Same as docker-compose.yml's worker service -- see
+            # k8s_api/celery.py's worker_init handler for why this is
+            # needed (Celery's prefork pool forks child processes, so
+            # backup_duration_seconds needs the file-backed multiprocess
+            # registry, served on :9808 below). Without this set, that
+            # metrics server never starts and the port sits unused.
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: /tmp/prometheus-multiproc
+          ports:
+            - name: metrics
+              containerPort: 9808
           volumeMounts:
             - name: data
               mountPath: /data
+          # 2 prefork children (--concurrency=2 above) + the prometheus
+          # multiproc HTTP server. Backup tasks stream tar data rather
+          # than buffer it in memory, but 700Mi limit still leaves margin
+          # for a large single-app backup without risking the host.
+          resources:
+            requests: { cpu: 200m, memory: 300Mi }
+            limits: { cpu: 750m, memory: 700Mi }
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: k8s-api-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-metrics
+  namespace: k8s-api
+  # VMServiceScrape (monitoring/10-vmservicescrapes.yaml) selects on this.
+  labels: { app: worker-metrics }
+spec:
+  selector: { app: worker }
+  ports:
+    - name: metrics
+      port: 9808
+      targetPort: metrics

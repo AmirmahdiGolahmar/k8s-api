@@ -26,6 +26,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 256Mi }
       containers:
         - name: web
           image: ghcr.io/amirmahdigolahmar/k8s-api:latest
@@ -58,6 +61,13 @@ spec:
                   value: golahmar.osdl.ir
             initialDelaySeconds: 15
             periodSeconds: 20
+          # gunicorn --workers 3 (Dockerfile's CMD): master + 3 sync
+          # workers, each a full Django/DRF process. ~300Mi covers steady
+          # state; 600Mi limit leaves room for a spike (e.g. /schema's
+          # OpenAPI generation) without threatening the rest of the VM.
+          resources:
+            requests: { cpu: 150m, memory: 300Mi }
+            limits: { cpu: 500m, memory: 600Mi }
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -68,8 +78,13 @@ kind: Service
 metadata:
   name: web
   namespace: k8s-api
+  # VMServiceScrape (monitoring/10-vmservicescrapes.yaml) selects on this.
+  labels: { app: web }
 spec:
   selector: { app: web }
   ports:
-    - port: 80
+    # Named so the VMServiceScrape endpoint can reference it by name
+    # instead of a bare port number.
+    - name: http
+      port: 80
       targetPort: 8000

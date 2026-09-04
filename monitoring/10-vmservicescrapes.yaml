@@ -1,0 +1,58 @@
+# VMServiceScrape is the VictoriaMetrics operator's equivalent of
+# Prometheus Operator's ServiceMonitor -- vmagent (installed by the
+# victoria-metrics-k8s-stack chart, see monitoring/victoria-values.yaml)
+# discovers these automatically because that chart's default
+# vmagent.spec.selectAllByDefault=true, with no extra release label
+# required on these objects.
+#
+# kube-state-metrics, node-exporter and Grafana's own scrape configs come
+# bundled with the chart -- these three are only the app-specific targets
+# that chart has no way to know about on its own.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: k8s-api-web
+  namespace: k8s-api
+spec:
+  selector:
+    matchLabels: { app: web }
+  endpoints:
+    - port: http
+      path: /metrics
+      # web's Service has no DNS name in Django's DJANGO_ALLOWED_HOSTS --
+      # same problem manifests/03-web.yaml's readinessProbe already hits
+      # and fixes the same way: vmagent's scrape request otherwise gets a
+      # Django 400 instead of metrics. Keep this in sync with whatever
+      # DJANGO_ALLOWED_HOSTS / the ingress host actually is.
+      #
+      # headers lives under vm_scrape_params, not directly on the
+      # endpoint -- confirmed against the installed VMServiceScrape CRD
+      # (`kubectl get crd vmservicescrapes... -o jsonpath=...`) after a
+      # bare `headers:` here was rejected by strict decoding.
+      vm_scrape_params:
+        headers:
+          - "Host: golahmar.osdl.ir"
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: k8s-api-worker
+  namespace: k8s-api
+spec:
+  selector:
+    matchLabels: { app: worker-metrics }
+  endpoints:
+    # prometheus_client's start_http_server (k8s_api/celery.py) -- plain
+    # stdlib HTTP, no Host-header/ALLOWED_HOSTS check like Django has.
+    - port: metrics
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: k8s-api-redis-exporter
+  namespace: k8s-api
+spec:
+  selector:
+    matchLabels: { app: redis-exporter }
+  endpoints:
+    - port: metrics

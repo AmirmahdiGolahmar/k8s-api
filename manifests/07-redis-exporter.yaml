@@ -35,6 +35,8 @@ kind: Service
 metadata:
   name: redis-exporter
   namespace: k8s-api
+  # VMServiceScrape (monitoring/10-vmservicescrapes.yaml) selects on this.
+  labels: { app: redis-exporter }
 spec:
   selector: { app: redis-exporter }
   ports:

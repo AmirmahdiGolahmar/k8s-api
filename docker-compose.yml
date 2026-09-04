@@ -44,6 +44,14 @@ services:
       # Host header Prometheus sends when scraping via the Compose service
       # name) isn't in that list, so without this Django 400s the scrape.
       DJANGO_ALLOWED_HOSTS: web,localhost,127.0.0.1
+      # The frontend's `npm run dev` (vite.config.js) proxies API requests
+      # here with changeOrigin -- that rewrites the Host header Django sees
+      # to localhost:8000, but leaves the browser's real Origin header as
+      # http://localhost:5173. Django's CSRF check compares Origin against
+      # get_host() and rejects the mismatch unless it's explicitly trusted
+      # here, which broke every POST (login, logout, create/delete...) from
+      # the local frontend dev server.
+      DJANGO_CSRF_TRUSTED_ORIGINS: http://localhost:5173
     depends_on:
       redis:
         condition: service_healthy

@@ -1,0 +1,210 @@
+# Values for victoriametrics/victoria-metrics-k8s-stack, chart version
+# 0.91.2 (app version v1.150.0) -- pinned deliberately, install with:
+#   helm install vmks vm/victoria-metrics-k8s-stack -n monitoring \
+#     --version 0.91.2 -f monitoring/victoria-values.yaml
+# Every key below was checked against that exact chart version's packaged
+# values.yaml / subchart values.yaml before being used here.
+#
+# This replaces the earlier kube-prometheus-stack plan (monitoring/values.yaml).
+# The cluster is actually two nodes -- golahmar-ha1 (control-plane) and
+# golahmar-ha2 -- each 4 vCPU / ~7.8GB RAM (confirmed via `kubectl describe
+# node`, both identical), not the single VM this file originally assumed;
+# workloads get scheduled across both. VictoriaMetrics is used instead of
+# vanilla Prometheus specifically because it's far lighter on memory for
+# the same retention/cardinality. Every component below gets an explicit,
+# deliberately conservative resources block; nothing is left to chart
+# defaults.
+#
+# Note: quay.io and registry.k8s.io both return 403 Forbidden from this
+# cluster. node-exporter, kube-state-metrics and the Grafana sidecars all
+# default to one of those -- the image overrides below (registry/
+# repository/tag on each) are the fix, copied from what's actually
+# running live on the cluster after resolving each ImagePullBackOff
+# (`kubectl get deploy/daemonset -n monitoring -o wide`), not re-derived
+# here. If any of them ever needs bumping, re-verify the new tag is
+# actually pullable from this cluster before changing it.
+
+# ---------------------------------------------------------------------------
+# VMSingle: the scraped-samples database. Single-node (not VMCluster --
+# that's for horizontally-scaled/HA setups, unnecessary complexity and
+# overhead for one VM). Biggest memory consumer here, but VictoriaMetrics'
+# storage engine is far more memory-efficient per series than Prometheus,
+# so this budget covers our actual target set (web, worker, redis-exporter,
+# kube-state-metrics, node-exporter -- a few thousand series at most) with
+# real headroom.
+# ---------------------------------------------------------------------------
+vmsingle:
+  spec:
+    retentionPeriod: "10d"
+    storage:
+      accessModes: ["ReadWriteOnce"]
+      # k3s's bundled StorageClass -- belongs here (storage is a PVC spec,
+      # storageClassName is a sibling of accessModes/resources on it), not
+      # as a top-level spec.storageClassName -- that was rejected as an
+      # unknown field on install (confirmed against the installed
+      # VMSingle CRD's schema). Verify with `kubectl get storageclass` if
+      # you're not on k3s's default local-path-provisioner.
+      storageClassName: local-path
+      resources:
+        requests:
+          # 20G free on / (df -h, 2026-09-03) -- 5Gi is a small fraction
+          # of that, plenty of margin for 10d retention at our cardinality.
+          storage: 5Gi
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 300m, memory: 256Mi }
+    extraArgs:
+      # Belt-and-suspenders under the 256Mi limit above: this caps
+      # VictoriaMetrics' own internal caches to 40% of memory it detects
+      # as available (it reads the container's cgroup limit), so it backs
+      # off and degrades (slower queries, smaller cache) well before
+      # bumping into the hard limit and getting OOM-killed -- a killed
+      # process loses its cache and comes back cold; this way it just
+      # gets slower under pressure instead.
+      memory.allowedPercent: "40"
+
+# ---------------------------------------------------------------------------
+# VMAgent: does the actual scraping (Prometheus Operator bundles this role
+# into Prometheus itself; VictoriaMetrics splits it out). selectAllByDefault
+# is already the chart default (true) -- kept explicit here since it's the
+# reason monitoring/10-vmservicescrapes.yaml's VMServiceScrape objects work
+# with no extra release label: without it, vmagent would silently ignore
+# any VMServiceScrape/VMPodScrape that doesn't carry this Helm release's
+# own label, same trap the old kube-prometheus-stack plan called out.
+# ---------------------------------------------------------------------------
+vmagent:
+  spec:
+    selectAllByDefault: true
+    resources:
+      requests: { cpu: 30m, memory: 48Mi }
+      limits: { cpu: 150m, memory: 96Mi }
+    extraArgs:
+      # If VMSingle is ever briefly unreachable (restart, resource
+      # pressure of its own), vmagent buffers unsent samples to local
+      # disk instead of dropping them -- on the root filesystem, shared
+      # with everything else on this VM (k3s state included). Capped so
+      # a prolonged outage degrades to dropped samples instead of a full
+      # disk, which is a strictly worse failure mode.
+      remoteWrite.maxDiskUsagePerURL: "300MB"
+
+# ---------------------------------------------------------------------------
+# VictoriaMetrics Operator: reconciles the CRDs (VMSingle, VMAgent,
+# VMServiceScrape, ...) into actual Deployments. Small, constant workload
+# regardless of what it's watching.
+# ---------------------------------------------------------------------------
+victoria-metrics-operator:
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 64Mi }
+
+# ---------------------------------------------------------------------------
+# No Alertmanager / vmalert / default alerting rules for now -- no
+# notification channel configured yet (no Slack/email wired up), so
+# running them would just burn resources with nowhere for alerts to go.
+# Enable later once that's set up.
+# ---------------------------------------------------------------------------
+alertmanager:
+  enabled: false
+vmalert:
+  enabled: false
+defaultRules:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Grafana: dashboards UI. Ingress deliberately OFF -- there's no spare
+# subdomain for it right now, so it's reached via `kubectl port-forward`
+# only. Revisit if a subdomain becomes available (a path-based route
+# under the existing golahmar.osdl.ir ingress, like manifests/06-ingress.yaml's
+# pattern, is the other option).
+# ---------------------------------------------------------------------------
+grafana:
+  # 128Mi (an earlier draft of this file) sits right at Grafana's own
+  # documented minimum -- fine at idle, but plugin loading/dashboard
+  # provisioning on startup pushes past it and risks an OOMKill restart
+  # loop. 256Mi is the same figure the (superseded) kube-prometheus-stack
+  # plan in monitoring/values.yaml already used for the same reason.
+  resources:
+    requests: { cpu: 30m, memory: 64Mi }
+    limits: { cpu: 150m, memory: 256Mi }
+
+  ingress:
+    enabled: false
+
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: local-path
+    accessModes: ["ReadWriteOnce"]
+    size: 1Gi
+
+  # Never put a real password in this file (it's committed to the repo).
+  # This Secret is created imperatively via kubectl before the chart is
+  # installed (kubectl create secret generic grafana-admin-credentials
+  # --from-literal=admin-user=admin --from-literal=admin-password=<...>)
+  # and referenced here by name only; the plaintext password never
+  # appears in git or in this session's own command history.
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
+
+  sidecar:
+    # Chart default (quay.io/kiwigrid/k8s-sidecar:2.10.3) 403s from this
+    # cluster. Live-confirmed working substitute.
+    image:
+      registry: docker.io
+      repository: kiwigrid/k8s-sidecar
+      tag: 2.8.1
+    # The dashboards/datasources sidecars (grafana/k8s-sidecar, one
+    # container per enabled type -- two here) had NO resource governance
+    # by default. This is the chart's own suggested figure
+    # (grafana/helm-charts values.yaml), applied per sidecar container --
+    # up to 200Mi combined at the limit, accounted for in the VM-wide
+    # budget below.
+    resources:
+      requests: { cpu: 50m, memory: 50Mi }
+      limits: { cpu: 100m, memory: 100Mi }
+    dashboards:
+      # Default is already true -- kept explicit since our custom k8s-api
+      # dashboard (monitoring/docker/grafana/dashboards/k8s-api-overview.json,
+      # imported via `kubectl create configmap` -- see install steps)
+      # depends on this: any ConfigMap labeled grafana_dashboard: "1" in
+      # this namespace is auto-loaded, no manual import needed. Same
+      # PromQL in that dashboard works unchanged against VictoriaMetrics.
+      enabled: true
+
+# ---------------------------------------------------------------------------
+# kube-state-metrics: translates the k8s API's object state (Deployment
+# replica counts, Pod phase, etc.) into /metrics. Cheap on a cluster this
+# small (a handful of namespaces/objects).
+# ---------------------------------------------------------------------------
+kube-state-metrics:
+  # Chart default (registry.k8s.io/kube-state-metrics/kube-state-metrics)
+  # 403s from this cluster. Live-confirmed working substitute -- a
+  # third-party mirror, not upstream k8s-sigs; re-verify pullability
+  # before ever bumping this tag.
+  image:
+    registry: hub.hamdocker.ir
+    repository: yuvytung/kube-state-metrics
+    tag: 2.18.0
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 50m, memory: 64Mi }
+
+# ---------------------------------------------------------------------------
+# node-exporter: DaemonSet, one Pod per node -- two Pods total on this
+# 2-node cluster (golahmar-ha1 + golahmar-ha2), so the budget below is
+# *per node*, not cluster-wide. Translates OS-level stats (CPU/mem/disk/
+# net) to /metrics. Very lightweight by design.
+# ---------------------------------------------------------------------------
+prometheus-node-exporter:
+  # Chart default (quay.io/prometheus/node-exporter) 403s from this
+  # cluster. Live-confirmed working substitute -- note the Docker Hub org
+  # is "prom", not "prometheus".
+  image:
+    registry: docker.io
+    repository: prom/node-exporter
+    tag: v1.11.1
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { cpu: 50m, memory: 32Mi }
